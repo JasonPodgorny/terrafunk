@@ -36,11 +36,14 @@ import (
 	"os"
 	"strings"
 
+	
+
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 
-	"github.com/gruntwork-io/terragrunt/config"
 	"github.com/gruntwork-io/terragrunt/options"
+
+	"github.com/JasonPodgorny/terrafunk/internal/config"
 
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
@@ -94,7 +97,10 @@ func main() {
 	extensions := config.EvalContextExtensions{}
 
 	// Generate HCL Eval Context
-	terragruntEvalCtx := config.CreateTerragruntEvalContext(*workdir, terragruntOptions, extensions)
+	terragruntEvalCtx, err := config.CreateTerragruntEvalContext(*workdir, terragruntOptions, extensions)
+	if err != nil {
+		errorLog.Printf("Create HCL Eval Context Had The Following Errors: %s", err)
+	}
 
 	// Parse HCL Expression
 	expr, parseDiags := hclsyntax.ParseExpression([]byte(*expression), "", hcl.Pos{Line: 1, Column: 1, Byte: 0})
