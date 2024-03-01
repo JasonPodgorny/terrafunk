@@ -29,14 +29,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"strings"
-
-	
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -57,6 +56,7 @@ func main() {
 	// Set Flag Arguments And Parse Inputs
 	expression := flag.String("expression", "read_terragrunt_config(\"terragrunt.hcl\")", "Terraform Expression To Run")
 	workdir := flag.String("workdir", ".", "Working Directory For Expression")
+	runcmdout := flag.Bool("runcmdout", false, "Include Run Command Outputs")
 	verbose := flag.Bool("verbose", false, "Verbose Outputs")
 	flag.Parse()
 
@@ -80,24 +80,34 @@ func main() {
 		infoLog.Printf("Expression: \n%s\n\n", *expression)
 	}
 
+	// If Workdir Is . Then Get Current Path
+	if *workdir == "." {
+		path, err := os.Getwd()
+		if err != nil {
+			log.Println(err)
+		}
+		*workdir = path
+	}
+
 	// Add Trailing Slash To Working Directory
 	*workdir = *workdir + "\\"
 
 	// Set Up Default Set Of Terragrunt Options
-	// If Errors, Log And Exit
-	terragruntOptions, err := options.NewTerragruntOptions(*workdir)
-	if err != nil {
-		errorLog.Fatalf("Get Options Had The Following Errors: %s", err)
-	}
+	terragruntOptions := options.NewTerragruntOptions()
 
 	// Parse Environment Variables And Add To Terragrunt Options
 	terragruntOptions.Env = parseEnvironmentVariables(os.Environ())
 
-	// Blank Extensions
-	extensions := config.EvalContextExtensions{}
+	// Set Terragrunt Options To Include Run Command Outputs If Flag Is Set And Env Variable Is Not Already True
+	if *runcmdout && terragruntOptions.Env["TERRAFUNK_RUN_CMD_OUT"] != "true" {
+		terragruntOptions.Env["TERRAFUNK_RUN_CMD_OUT"] = "true"
+	}
+
+	// Create Parsing Context
+	ctx := config.NewParsingContext(context.Background(), terragruntOptions)
 
 	// Generate HCL Eval Context
-	terragruntEvalCtx, err := config.CreateTerragruntEvalContext(*workdir, terragruntOptions, extensions)
+	terragruntEvalCtx, err := config.CreateTerragruntEvalContext(ctx, *workdir)
 	if err != nil {
 		errorLog.Printf("Create HCL Eval Context Had The Following Errors: %s", err)
 	}

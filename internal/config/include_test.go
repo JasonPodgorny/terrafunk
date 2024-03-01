@@ -6,7 +6,6 @@ import (
 	"github.com/gruntwork-io/terragrunt/remote"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zclconf/go-cty/cty"
 )
 
 func TestMergeConfigIntoIncludedConfig(t *testing.T) {
@@ -130,7 +129,13 @@ func TestMergeConfigIntoIncludedConfig(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		testCase.includedConfig.Merge(testCase.config, mockOptionsForTest(t))
+		// if nil, initialize to empty dependency list
+		if testCase.expected.TerragruntDependencies == nil {
+			testCase.expected.TerragruntDependencies = []Dependency{}
+		}
+
+		err := testCase.includedConfig.Merge(testCase.config, mockOptionsForTest(t))
+		assert.NoError(t, err)
 		assert.Equal(t, testCase.expected, testCase.includedConfig)
 	}
 }
@@ -245,6 +250,10 @@ func TestDeepMergeConfigIntoIncludedConfig(t *testing.T) {
 						Name:       "mysql",
 						ConfigPath: "../mysql",
 					},
+					{
+						Name:       "vpc",
+						ConfigPath: "../vpc",
+					},
 				}},
 		},
 		// Deep merge retryable errors
@@ -268,13 +277,12 @@ func TestDeepMergeConfigIntoIncludedConfig(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			err := testCase.target.DeepMerge(testCase.source, mockOptionsForTest(t))
 			require.NoError(t, err)
+
+			// if nil, initialize to empty dependency list
+			if testCase.expected.TerragruntDependencies == nil {
+				testCase.expected.TerragruntDependencies = []Dependency{}
+			}
 			assert.Equal(t, testCase.expected, testCase.target)
 		})
 	}
-}
-
-func mapToCty(t *testing.T, valMap map[string]interface{}) *cty.Value {
-	outCty, err := convertToCtyWithJson(valMap)
-	require.NoError(t, err)
-	return &outCty
 }

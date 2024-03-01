@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gruntwork-io/terragrunt/codegen"
+	"github.com/gruntwork-io/terragrunt/config/hclparse"
+
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/imdario/mergo"
-	"github.com/zclconf/go-cty/cty"
 
-	"github.com/gruntwork-io/terragrunt/errors"
+	"github.com/gruntwork-io/go-commons/errors"
 	"github.com/gruntwork-io/terragrunt/options"
 	"github.com/gruntwork-io/terragrunt/util"
 )
@@ -19,20 +21,15 @@ import (
 const bareIncludeKey = ""
 
 // Parse the config of the given include, if one is specified
-func parseIncludedConfig(
-	includedConfig *IncludeConfig,
-	terragruntOptions *options.TerragruntOptions,
-	dependencyOutputs *cty.Value,
-	decodeList []PartialDecodeSectionType,
-) (*TerragruntConfig, error) {
+func parseIncludedConfig(ctx *ParsingContext, includedConfig *IncludeConfig) (*TerragruntConfig, error) {
 	if includedConfig.Path == "" {
-		return nil, errors.WithStackTrace(IncludedConfigMissingPath(terragruntOptions.TerragruntConfigPath))
+		return nil, errors.WithStackTrace(IncludedConfigMissingPathError(ctx.TerragruntOptions.TerragruntConfigPath))
 	}
 
 	includePath := includedConfig.Path
 
 	if !filepath.IsAbs(includePath) {
-		includePath = util.JoinPath(filepath.Dir(terragruntOptions.TerragruntConfigPath), includePath)
+		includePath = util.JoinPath(filepath.Dir(ctx.TerragruntOptions.TerragruntConfigPath), includePath)
 	}
 
 	// These condition are here to specifically handle the `run-all` command. During any `run-all` call, terragrunt
@@ -79,35 +76,32 @@ func parseIncludedConfig(
 	// NOTE: To make the logic easier to implement, we implement the inverse here, where we check whether the included
 	// config has a dependency block, and if we are in the middle of a partial parse, we perform a partial parse of the
 	// included config.
-	hasDependency, err := configFileHasDependencyBlock(includePath, terragruntOptions)
+	hasDependency, err := configFileHasDependencyBlock(includePath)
 	if err != nil {
 		return nil, err
 	}
-	if hasDependency && len(decodeList) > 0 {
-		terragruntOptions.Logger.Debugf(
+
+	if hasDependency && len(ctx.PartialParseDecodeList) > 0 {
+		ctx.TerragruntOptions.Logger.Debugf(
 			"Included config %s can only be partially parsed during dependency graph formation for run-all command as it has a dependency block.",
 			includePath,
 		)
-		return PartialParseConfigFile(includePath, terragruntOptions, includedConfig, decodeList)
+		return PartialParseConfigFile(ctx, includePath, includedConfig)
 	}
-	return ParseConfigFile(includePath, terragruntOptions, includedConfig, dependencyOutputs)
+
+	return ParseConfigFile(ctx.TerragruntOptions, ctx, includePath, includedConfig)
 }
 
 // handleInclude merges the included config into the current config depending on the merge strategy specified by the
 // user.
-func handleInclude(
-	config *TerragruntConfig,
-	trackInclude *TrackInclude,
-	terragruntOptions *options.TerragruntOptions,
-	dependencyOutputs *cty.Value,
-) (*TerragruntConfig, error) {
-	if trackInclude == nil {
+func handleInclude(ctx *ParsingContext, config *TerragruntConfig, isPartial bool) (*TerragruntConfig, error) {
+	if ctx.TrackInclude == nil {
 		return nil, fmt.Errorf("You reached an impossible condition. This is most likely a bug in terragrunt. Please open an issue at github.com/gruntwork-io/terragrunt with this error message. Code: HANDLE_INCLUDE_NIL_INCLUDE_CONFIG")
 	}
 
 	// We merge in the include blocks in reverse order here. The expectation is that the bottom most elements override
 	// those in earlier includes, so we need to merge bottom up instead of top down to ensure this.
-	includeList := trackInclude.CurrentList
+	includeList := ctx.TrackInclude.CurrentList
 	baseConfig := config
 	for i := len(includeList) - 1; i >= 0; i-- {
 		includeConfig := includeList[i]
@@ -116,21 +110,33 @@ func handleInclude(
 			return config, err
 		}
 
-		parsedIncludeConfig, err := parseIncludedConfig(&includeConfig, terragruntOptions, dependencyOutputs, nil)
+		var (
+			parsedIncludeConfig *TerragruntConfig
+			logPrefix           string
+		)
+
+		if isPartial {
+			parsedIncludeConfig, err = partialParseIncludedConfig(ctx, &includeConfig)
+			logPrefix = "[Partial] "
+		} else {
+			parsedIncludeConfig, err = parseIncludedConfig(ctx, &includeConfig)
+		}
 		if err != nil {
 			return nil, err
 		}
 
 		switch mergeStrategy {
 		case NoMerge:
-			terragruntOptions.Logger.Debugf("Included config %s has strategy no merge: not merging config in.", includeConfig.Path)
+			ctx.TerragruntOptions.Logger.Debugf("%sIncluded config %s has strategy no merge: not merging config in.", logPrefix, includeConfig.Path)
 		case ShallowMerge:
-			terragruntOptions.Logger.Debugf("Included config %s has strategy shallow merge: merging config in (shallow).", includeConfig.Path)
-			parsedIncludeConfig.Merge(baseConfig, terragruntOptions)
+			ctx.TerragruntOptions.Logger.Debugf("%sIncluded config %s has strategy shallow merge: merging config in (shallow).", logPrefix, includeConfig.Path)
+			if err := parsedIncludeConfig.Merge(baseConfig, ctx.TerragruntOptions); err != nil {
+				return nil, err
+			}
 			baseConfig = parsedIncludeConfig
 		case DeepMerge:
-			terragruntOptions.Logger.Debugf("Included config %s has strategy deep merge: merging config in (deep).", includeConfig.Path)
-			if err := parsedIncludeConfig.DeepMerge(baseConfig, terragruntOptions); err != nil {
+			ctx.TerragruntOptions.Logger.Debugf("%sIncluded config %s has strategy deep merge: merging config in (deep).", logPrefix, includeConfig.Path)
+			if err := parsedIncludeConfig.DeepMerge(baseConfig, ctx.TerragruntOptions); err != nil {
 				return nil, err
 			}
 			baseConfig = parsedIncludeConfig
@@ -141,69 +147,17 @@ func handleInclude(
 	return baseConfig, nil
 }
 
-// handleIncludePartial merges the a partially parsed include config into the child config according to the strategy
-// specified by the user.
-func handleIncludePartial(
-	config *TerragruntConfig,
-	trackInclude *TrackInclude,
-	terragruntOptions *options.TerragruntOptions,
-	decodeList []PartialDecodeSectionType,
-) (*TerragruntConfig, error) {
-	if trackInclude == nil {
-		return nil, fmt.Errorf("You reached an impossible condition. This is most likely a bug in terragrunt. Please open an issue at github.com/gruntwork-io/terragrunt with this error message. Code: HANDLE_INCLUDE_PARTIAL_NIL_INCLUDE_CONFIG")
-	}
-
-	// We merge in the include blocks in reverse order here. The expectation is that the bottom most elements override
-	// those in earlier includes, so we need to merge bottom up instead of top down to ensure this.
-	includeList := trackInclude.CurrentList
-	baseConfig := config
-	for i := len(includeList) - 1; i >= 0; i-- {
-		includeConfig := includeList[i]
-		mergeStrategy, err := includeConfig.GetMergeStrategy()
-		if err != nil {
-			return nil, err
-		}
-
-		parsedIncludeConfig, err := partialParseIncludedConfig(&includeConfig, terragruntOptions, decodeList)
-		if err != nil {
-			return nil, err
-		}
-
-		switch mergeStrategy {
-		case NoMerge:
-			terragruntOptions.Logger.Debugf("[Partial] Included config %s has strategy no merge: not merging config in.", includeConfig.Path)
-		case ShallowMerge:
-			terragruntOptions.Logger.Debugf("[Partial] Included config %s has strategy shallow merge: merging config in (shallow).", includeConfig.Path)
-			parsedIncludeConfig.Merge(baseConfig, terragruntOptions)
-			baseConfig = parsedIncludeConfig
-		case DeepMerge:
-			terragruntOptions.Logger.Debugf("[Partial] Included config %s has strategy deep merge: merging config in (deep).", includeConfig.Path)
-			if err := parsedIncludeConfig.DeepMerge(baseConfig, terragruntOptions); err != nil {
-				return nil, err
-			}
-			baseConfig = parsedIncludeConfig
-		default:
-			return nil, fmt.Errorf("You reached an impossible condition. This is most likely a bug in terragrunt. Please open an issue at github.com/gruntwork-io/terragrunt with this error message. Code: UNKNOWN_MERGE_STRATEGY_%s_PARTIAL", mergeStrategy)
-		}
-	}
-	return baseConfig, nil
-}
-
 // handleIncludeForDependency is a partial merge of the included config to handle dependencies. This only merges the
 // dependency block configurations between the included config and the child config. This allows us to merge the two
 // dependencies prior to retrieving the outputs, allowing you to have partial configuration that is overridden by a
 // child.
-func handleIncludeForDependency(
-	childDecodedDependency terragruntDependency,
-	trackInclude *TrackInclude,
-	terragruntOptions *options.TerragruntOptions,
-) (*terragruntDependency, error) {
-	if trackInclude == nil {
+func handleIncludeForDependency(ctx *ParsingContext, childDecodedDependency terragruntDependency) (*terragruntDependency, error) {
+	if ctx.TrackInclude == nil {
 		return nil, fmt.Errorf("You reached an impossible condition. This is most likely a bug in terragrunt. Please open an issue at github.com/gruntwork-io/terragrunt with this error message. Code: HANDLE_INCLUDE_DEPENDENCY_NIL_INCLUDE_CONFIG")
 	}
 	// We merge in the include blocks in reverse order here. The expectation is that the bottom most elements override
 	// those in earlier includes, so we need to merge bottom up instead of top down to ensure this.
-	includeList := trackInclude.CurrentList
+	includeList := ctx.TrackInclude.CurrentList
 	baseDependencyBlock := childDecodedDependency.Dependencies
 	for i := len(includeList) - 1; i >= 0; i-- {
 		includeConfig := includeList[i]
@@ -212,20 +166,20 @@ func handleIncludeForDependency(
 			return nil, err
 		}
 
-		includedPartialParse, err := partialParseIncludedConfig(&includeConfig, terragruntOptions, []PartialDecodeSectionType{DependencyBlock})
+		includedPartialParse, err := partialParseIncludedConfig(ctx.WithDecodeList(DependencyBlock), &includeConfig)
 		if err != nil {
 			return nil, err
 		}
 
 		switch mergeStrategy {
 		case NoMerge:
-			terragruntOptions.Logger.Debugf("Included config %s has strategy no merge: not merging config in for dependency.", includeConfig.Path)
+			ctx.TerragruntOptions.Logger.Debugf("Included config %s has strategy no merge: not merging config in for dependency.", includeConfig.Path)
 		case ShallowMerge:
-			terragruntOptions.Logger.Debugf("Included config %s has strategy shallow merge: merging config in (shallow) for dependency.", includeConfig.Path)
+			ctx.TerragruntOptions.Logger.Debugf("Included config %s has strategy shallow merge: merging config in (shallow) for dependency.", includeConfig.Path)
 			mergedDependencyBlock := mergeDependencyBlocks(includedPartialParse.TerragruntDependencies, baseDependencyBlock)
 			baseDependencyBlock = mergedDependencyBlock
 		case DeepMerge:
-			terragruntOptions.Logger.Debugf("Included config %s has strategy deep merge: merging config in (deep) for dependency.", includeConfig.Path)
+			ctx.TerragruntOptions.Logger.Debugf("Included config %s has strategy deep merge: merging config in (deep) for dependency.", includeConfig.Path)
 			mergedDependencyBlock, err := deepMergeDependencyBlocks(includedPartialParse.TerragruntDependencies, baseDependencyBlock)
 			if err != nil {
 				return nil, err
@@ -242,13 +196,12 @@ func handleIncludeForDependency(
 // attributes defined in the targetConfig. Note that this will modify the targetConfig.
 // NOTE: the following attributes are deliberately omitted from the merge operation, as they are handled differently in
 // the parser:
-//     - dependency blocks (TerragruntDependencies) [These blocks need to retrieve outputs, so we need to merge during
-//       the parsing step, not after the full config is decoded]
-//     - locals [These blocks are not merged by design]
+//   - locals [These blocks are not merged by design]
+//
 // NOTE: dependencies block is a special case and is merged deeply. This is necessary to ensure the configstack system
 // works correctly, as it uses the `Dependencies` list to track the dependencies of modules for graph building purposes.
 // This list includes the dependencies added from dependency blocks, which is handled in a different stage.
-func (targetConfig *TerragruntConfig) Merge(sourceConfig *TerragruntConfig, terragruntOptions *options.TerragruntOptions) {
+func (targetConfig *TerragruntConfig) Merge(sourceConfig *TerragruntConfig, terragruntOptions *options.TerragruntOptions) error {
 	// Merge simple attributes first
 	if sourceConfig.DownloadDir != "" {
 		targetConfig.DownloadDir = sourceConfig.DownloadDir
@@ -304,8 +257,12 @@ func (targetConfig *TerragruntConfig) Merge(sourceConfig *TerragruntConfig, terr
 
 			mergeHooks(terragruntOptions, sourceConfig.Terraform.BeforeHooks, &targetConfig.Terraform.BeforeHooks)
 			mergeHooks(terragruntOptions, sourceConfig.Terraform.AfterHooks, &targetConfig.Terraform.AfterHooks)
+			mergeErrorHooks(terragruntOptions, sourceConfig.Terraform.ErrorHooks, &targetConfig.Terraform.ErrorHooks)
 		}
 	}
+
+	// Dependency blocks are shallow merged by name
+	targetConfig.TerragruntDependencies = mergeDependencyBlocks(targetConfig.TerragruntDependencies, sourceConfig.TerragruntDependencies)
 
 	// Deep merge the dependencies list. This is different from dependency blocks, and refers to the deprecated
 	// dependencies block!
@@ -323,6 +280,12 @@ func (targetConfig *TerragruntConfig) Merge(sourceConfig *TerragruntConfig, terr
 
 	// Merge the generate configs. This is a shallow merge. Meaning, if the child has the same name generate block, then the
 	// child's generate block will override the parent's block.
+
+	err := validateGenerateConfigs(&sourceConfig.GenerateConfigs, &targetConfig.GenerateConfigs)
+	if err != nil {
+		return err
+	}
+
 	for key, val := range sourceConfig.GenerateConfigs {
 		targetConfig.GenerateConfigs[key] = val
 	}
@@ -330,22 +293,26 @@ func (targetConfig *TerragruntConfig) Merge(sourceConfig *TerragruntConfig, terr
 	if sourceConfig.Inputs != nil {
 		targetConfig.Inputs = mergeInputs(sourceConfig.Inputs, targetConfig.Inputs)
 	}
+
+	copyFieldsMetadata(sourceConfig, targetConfig)
+
+	return nil
 }
 
 // DeepMerge performs a deep merge of the given sourceConfig into the targetConfig. Deep merge is defined as follows:
-// - For simple types, the source overrides the target.
-// - For lists, the two attribute lists are combined together in concatenation.
-// - For maps, the two maps are combined together recursively. That is, if the map keys overlap, then a deep merge is
-//   performed on the map value.
-// - Note that some structs are not deep mergeable due to an implementation detail. This will change in the future. The
-//   following structs have this limitation:
-//     - remote_state
-//     - generate
-// - Note that the following attributes are deliberately omitted from the merge operation, as they are handled
-//   differently in the parser:
-//     - dependency blocks (TerragruntDependencies) [These blocks need to retrieve outputs, so we need to merge during
-//       the parsing step, not after the full config is decoded]
-//     - locals [These blocks are not merged by design]
+//   - For simple types, the source overrides the target.
+//   - For lists, the two attribute lists are combined together in concatenation.
+//   - For maps, the two maps are combined together recursively. That is, if the map keys overlap, then a deep merge is
+//     performed on the map value.
+//   - Note that some structs are not deep mergeable due to an implementation detail. This will change in the future. The
+//     following structs have this limitation:
+//   - remote_state
+//   - generate
+//   - Note that the following attributes are deliberately omitted from the merge operation, as they are handled
+//     differently in the parser:
+//   - dependency blocks (TerragruntDependencies) [These blocks need to retrieve outputs, so we need to merge during
+//     the parsing step, not after the full config is decoded]
+//   - locals [These blocks are not merged by design]
 func (targetConfig *TerragruntConfig) DeepMerge(sourceConfig *TerragruntConfig, terragruntOptions *options.TerragruntOptions) error {
 	// Merge simple attributes first
 	if sourceConfig.DownloadDir != "" {
@@ -420,6 +387,13 @@ func (targetConfig *TerragruntConfig) DeepMerge(sourceConfig *TerragruntConfig, 
 		targetConfig.Dependencies = resultModuleDependencies
 	}
 
+	// Dependency blocks are deep merged by name
+	mergedDeps, err := deepMergeDependencyBlocks(targetConfig.TerragruntDependencies, sourceConfig.TerragruntDependencies)
+	if err != nil {
+		return err
+	}
+	targetConfig.TerragruntDependencies = mergedDeps
+
 	if sourceConfig.RetryableErrors != nil {
 		targetConfig.RetryableErrors = append(targetConfig.RetryableErrors, sourceConfig.RetryableErrors...)
 	}
@@ -432,10 +406,23 @@ func (targetConfig *TerragruntConfig) DeepMerge(sourceConfig *TerragruntConfig, 
 			if sourceConfig.Terraform.Source != nil {
 				targetConfig.Terraform.Source = sourceConfig.Terraform.Source
 			}
+
+			if sourceConfig.Terraform.IncludeInCopy != nil {
+				srcList := *sourceConfig.Terraform.IncludeInCopy
+				if targetConfig.Terraform.IncludeInCopy != nil {
+					targetList := *targetConfig.Terraform.IncludeInCopy
+					combinedList := append(srcList, targetList...)
+					targetConfig.Terraform.IncludeInCopy = &combinedList
+				} else {
+					targetConfig.Terraform.IncludeInCopy = &srcList
+				}
+			}
+
 			mergeExtraArgs(terragruntOptions, sourceConfig.Terraform.ExtraArgs, &targetConfig.Terraform.ExtraArgs)
 
 			mergeHooks(terragruntOptions, sourceConfig.Terraform.BeforeHooks, &targetConfig.Terraform.BeforeHooks)
 			mergeHooks(terragruntOptions, sourceConfig.Terraform.AfterHooks, &targetConfig.Terraform.AfterHooks)
+			mergeErrorHooks(terragruntOptions, sourceConfig.Terraform.ErrorHooks, &targetConfig.Terraform.ErrorHooks)
 		}
 	}
 
@@ -456,6 +443,8 @@ func (targetConfig *TerragruntConfig) DeepMerge(sourceConfig *TerragruntConfig, 
 	for key, val := range sourceConfig.GenerateConfigs {
 		targetConfig.GenerateConfigs[key] = val
 	}
+
+	copyFieldsMetadata(sourceConfig, targetConfig)
 	return nil
 }
 
@@ -613,14 +602,31 @@ func mergeHooks(terragruntOptions *options.TerragruntOptions, childHooks []Hook,
 	*parentHooks = result
 }
 
+// Merge the error hooks (error_hook).
+// Does the same thing as mergeHooks but for error hooks
+// TODO: Figure out more DRY way to do this
+func mergeErrorHooks(terragruntOptions *options.TerragruntOptions, childHooks []ErrorHook, parentHooks *[]ErrorHook) {
+	result := *parentHooks
+	for _, child := range childHooks {
+		parentHookWithSameName := getIndexOfErrorHookWithName(result, child.Name)
+		if parentHookWithSameName != -1 {
+			// If the parent contains a hook with the same name as the child,
+			// then override the parent's hook with the child's.
+			terragruntOptions.Logger.Debugf("hook '%v' from child overriding parent", child.Name)
+			result[parentHookWithSameName] = child
+		} else {
+			// If the parent does not contain a hook with the same name as the child
+			// then add the child to the end.
+			result = append(result, child)
+		}
+	}
+	*parentHooks = result
+}
+
 // getTrackInclude converts the terragrunt include blocks into TrackInclude structs that differentiate between an
-// included config in the current parsing context, and an included config that was passed through from a previous
-// parsing context.
-func getTrackInclude(
-	terragruntIncludeList []IncludeConfig,
-	includeFromChild *IncludeConfig,
-	terragruntOptions *options.TerragruntOptions,
-) (*TrackInclude, error) {
+// included config in the current parsing ctx, and an included config that was passed through from a previous
+// parsing ctx.
+func getTrackInclude(ctx *ParsingContext, terragruntIncludeList []IncludeConfig, includeFromChild *IncludeConfig) (*TrackInclude, error) {
 	includedPaths := []string{}
 	terragruntIncludeMap := make(map[string]IncludeConfig, len(terragruntIncludeList))
 	for _, tgInc := range terragruntIncludeList {
@@ -629,32 +635,33 @@ func getTrackInclude(
 	}
 
 	hasInclude := len(terragruntIncludeList) > 0
-	if hasInclude && includeFromChild != nil {
+	var trackInc TrackInclude
+	switch {
+	case hasInclude && includeFromChild != nil:
 		// tgInc appears in a parent that is already included, which means a nested include block. This is not
 		// something we currently support.
-		err := errors.WithStackTrace(TooManyLevelsOfInheritance{
-			ConfigPath:             terragruntOptions.TerragruntConfigPath,
+		err := errors.WithStackTrace(TooManyLevelsOfInheritanceError{
+			ConfigPath:             ctx.TerragruntOptions.TerragruntConfigPath,
 			FirstLevelIncludePath:  includeFromChild.Path,
 			SecondLevelIncludePath: strings.Join(includedPaths, ","),
 		})
 		return nil, err
-	} else if hasInclude && includeFromChild == nil {
-		// Current parsing context where there is no included config already loaded.
-		trackInc := TrackInclude{
+	case hasInclude && includeFromChild == nil:
+		// Current parsing ctx where there is no included config already loaded.
+		trackInc = TrackInclude{
 			CurrentList: terragruntIncludeList,
 			CurrentMap:  terragruntIncludeMap,
 			Original:    nil,
 		}
-		return &trackInc, nil
-	} else {
-		// Parsing context where there is an included config already loaded.
-		trackInc := TrackInclude{
+	case !hasInclude:
+		// Parsing ctx where there is an included config already loaded.
+		trackInc = TrackInclude{
 			CurrentList: terragruntIncludeList,
 			CurrentMap:  terragruntIncludeMap,
 			Original:    includeFromChild,
 		}
-		return &trackInc, nil
 	}
+	return &trackInc, nil
 }
 
 // updateBareIncludeBlock searches the parsed terragrunt contents for a bare include block (include without a label),
@@ -662,27 +669,44 @@ func getTrackInclude(
 // label counts when parsing out labels with a go struct.
 //
 // Returns the updated contents, a boolean indicated whether anything changed, and an error (if any).
-func updateBareIncludeBlock(file *hcl.File, filename string) ([]byte, bool, error) {
-	if filepath.Ext(filename) == ".json" {
-		return updateBareIncludeBlockJSON(file.Bytes)
-	}
+func updateBareIncludeBlock(file *hclparse.File) error {
+	var (
+		codeWasUpdated bool
+		content        []byte
+		err            error
+	)
 
-	hclFile, diags := hclwrite.ParseConfig(file.Bytes, filename, hcl.InitialPos)
-	if diags.HasErrors() {
-		return nil, false, errors.WithStackTrace(diags)
-	}
-
-	codeWasUpdated := false
-	for _, block := range hclFile.Body().Blocks() {
-		if block.Type() == "include" && len(block.Labels()) == 0 {
-			if codeWasUpdated {
-				return nil, false, errors.WithStackTrace(MultipleBareIncludeBlocksErr{})
-			}
-			block.SetLabels([]string{bareIncludeKey})
-			codeWasUpdated = true
+	switch filepath.Ext(file.ConfigPath) {
+	case ".json":
+		content, codeWasUpdated, err = updateBareIncludeBlockJSON(file.Bytes)
+		if err != nil {
+			return err
 		}
+	default:
+		hclFile, diags := hclwrite.ParseConfig(file.Bytes, file.ConfigPath, hcl.InitialPos)
+		if diags.HasErrors() {
+			return errors.WithStackTrace(diags)
+		}
+
+		for _, block := range hclFile.Body().Blocks() {
+			if block.Type() == MetadataInclude && len(block.Labels()) == 0 {
+				if codeWasUpdated {
+					return errors.WithStackTrace(MultipleBareIncludeBlocksErr{})
+				}
+
+				block.SetLabels([]string{bareIncludeKey})
+				codeWasUpdated = true
+			}
+		}
+
+		content = hclFile.Bytes()
 	}
-	return hclFile.Bytes(), codeWasUpdated, nil
+
+	if !codeWasUpdated {
+		return nil
+	}
+
+	return file.Update(content)
 }
 
 // updateBareIncludeBlockJSON implements the logic for updateBareIncludeBlock when the terragrunt.hcl configuration is
@@ -691,37 +715,42 @@ func updateBareIncludeBlock(file *hcl.File, filename string) ([]byte, bool, erro
 // block:
 //
 // Case 1: a single include block as top level:
-// {
-//   "include": {
-//     "path": "foo"
-//   }
-// }
+//
+//	{
+//	  "include": {
+//	    "path": "foo"
+//	  }
+//	}
 //
 // Case 2: a single include block in list:
-// {
-//   "include": [
-//     {"path": "foo"}
-//   ]
-// }
+//
+//	{
+//	  "include": [
+//	    {"path": "foo"}
+//	  ]
+//	}
 //
 // Case 3: mixed bare and labeled include block as list:
-// {
-//   "include": [
-//     {"path": "foo"},
-//     {
-//       "labeled": {"path": "bar"}
-//     }
-//   ]
-// }
+//
+//	{
+//	  "include": [
+//	    {"path": "foo"},
+//	    {
+//	      "labeled": {"path": "bar"}
+//	    }
+//	  ]
+//	}
 //
 // For simplicity of implementation, we focus on handling Case 1 and 2, and ignore Case 3. If we see Case 3, we will
 // error out. Instead, the user should handle this case explicitly using the object encoding instead of list encoding:
-// {
-//   "include": {
-//     "": {"path": "foo"},
-//     "labeled": {"path": "bar"}
-//   }
-// }
+//
+//	{
+//	  "include": {
+//	    "": {"path": "foo"},
+//	    "labeled": {"path": "bar"}
+//	  }
+//	}
+//
 // If the multiple include blocks are encoded in this way in the json configuration, nothing needs to be done by this
 // function.
 func updateBareIncludeBlockJSON(fileBytes []byte) ([]byte, bool, error) {
@@ -729,7 +758,7 @@ func updateBareIncludeBlockJSON(fileBytes []byte) ([]byte, bool, error) {
 	if err := json.Unmarshal(fileBytes, &parsed); err != nil {
 		return nil, false, errors.WithStackTrace(err)
 	}
-	includeBlock, hasKey := parsed["include"]
+	includeBlock, hasKey := parsed[MetadataInclude]
 	if !hasKey {
 		// No include block, so don't do anything
 		return fileBytes, false, nil
@@ -774,7 +803,7 @@ func updateBareIncludeBlockJSON(fileBytes []byte) ([]byte, bool, error) {
 // can directly assign to the map with the single "" key without worrying about the possibility of other include blocks
 // since we will only call this function if there is only one include block, and that is a bare block with no labels.
 func updateSingleBareIncludeInParsedJSON(parsed map[string]interface{}, newVal interface{}) ([]byte, bool, error) {
-	parsed["include"] = map[string]interface{}{bareIncludeKey: newVal}
+	parsed[MetadataInclude] = map[string]interface{}{bareIncludeKey: newVal}
 	updatedBytes, err := json.Marshal(parsed)
 	return updatedBytes, true, errors.WithStackTrace(err)
 }
@@ -794,6 +823,34 @@ func jsonIsIncludeBlock(jsonData interface{}) bool {
 		}
 	}
 	return false
+}
+
+// copyFieldsMetadata Copy fields metadata between TerragruntConfig instances.
+func copyFieldsMetadata(sourceConfig *TerragruntConfig, targetConfig *TerragruntConfig) {
+	if sourceConfig.FieldsMetadata != nil {
+		if targetConfig.FieldsMetadata == nil {
+			targetConfig.FieldsMetadata = map[string]map[string]interface{}{}
+		}
+		for k, v := range sourceConfig.FieldsMetadata {
+			targetConfig.FieldsMetadata[k] = v
+		}
+	}
+}
+
+// validateGenerateConfigs Validate if exists duplicate generate configs.
+func validateGenerateConfigs(sourceConfig *map[string]codegen.GenerateConfig, targetConfig *map[string]codegen.GenerateConfig) error {
+	var duplicatedNames []string
+	for key := range *targetConfig {
+		if _, found := (*sourceConfig)[key]; found {
+			duplicatedNames = append(duplicatedNames, key)
+		}
+	}
+
+	if len(duplicatedNames) != 0 {
+		return DuplicatedGenerateBlocksError{duplicatedNames}
+	}
+
+	return nil
 }
 
 // Custom error types

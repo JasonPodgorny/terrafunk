@@ -21,7 +21,13 @@ func TestTerragruntConfigAsCtyDrift(t *testing.T) {
 	testFalse := false
 	mockOutputs := cty.Zero
 	mockOutputsAllowedTerraformCommands := []string{"init"}
+	dependentModulesPath := []*string{&testSource}
 	testConfig := TerragruntConfig{
+		Catalog: &CatalogConfig{
+			URLs: []string{
+				"repo/path",
+			},
+		},
 		Terraform: &TerraformConfig{
 			Source: &testSource,
 			ExtraArgs: []TerraformExtraArguments{
@@ -42,6 +48,14 @@ func TestTerragruntConfigAsCtyDrift(t *testing.T) {
 					Name:     "init",
 					Commands: []string{"init"},
 					Execute:  []string{"true"},
+				},
+			},
+			ErrorHooks: []ErrorHook{
+				ErrorHook{
+					Name:     "init",
+					Commands: []string{"init"},
+					Execute:  []string{"true"},
+					OnErrors: []string{".*"},
 				},
 			},
 		},
@@ -69,8 +83,9 @@ func TestTerragruntConfigAsCtyDrift(t *testing.T) {
 		Locals: map[string]interface{}{
 			"quote": "the answer is 42",
 		},
+		DependentModulesPath: dependentModulesPath,
 		TerragruntDependencies: []Dependency{
-			Dependency{
+			{
 				Name:                                "foo",
 				ConfigPath:                          "foo",
 				SkipOutputs:                         &testTrue,
@@ -110,7 +125,7 @@ func TestTerragruntConfigAsCtyDrift(t *testing.T) {
 			checked[mapKey] = true
 		}
 	}
-	for key, _ := range ctyMap {
+	for key := range ctyMap {
 		_, hasKey := checked[key]
 		assert.Truef(t, hasKey, "cty value key %s is not accounted for from struct field", key)
 	}
@@ -149,7 +164,7 @@ func TestRemoteStateAsCtyDrift(t *testing.T) {
 			checked[mapKey] = true
 		}
 	}
-	for key, _ := range ctyMap {
+	for key := range ctyMap {
 		_, hasKey := checked[key]
 		assert.Truef(t, hasKey, "cty value key %s is not accounted for from struct field", key)
 	}
@@ -169,6 +184,8 @@ func TestTerraformConfigAsCtyDrift(t *testing.T) {
 
 func terragruntConfigStructFieldToMapKey(t *testing.T, fieldName string) (string, bool) {
 	switch fieldName {
+	case "Catalog":
+		return "catalog", true
 	case "Terraform":
 		return "terraform", true
 	case "TerraformBinary":
@@ -205,12 +222,16 @@ func terragruntConfigStructFieldToMapKey(t *testing.T, fieldName string) (string
 		return "", false
 	case "ProcessedIncludes":
 		return "", false
+	case "FieldsMetadata":
+		return "", false
 	case "RetryableErrors":
 		return "retryable_errors", true
 	case "RetryMaxAttempts":
 		return "retry_max_attempts", true
 	case "RetrySleepIntervalSec":
 		return "retry_sleep_interval_sec", true
+	case "DependentModulesPath":
+		return "dependent_modules", true
 	default:
 		t.Fatalf("Unknown struct property: %s", fieldName)
 		// This should not execute

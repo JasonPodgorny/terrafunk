@@ -7,7 +7,7 @@ import (
 	"github.com/zclconf/go-cty/cty/gocty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 
-	"github.com/gruntwork-io/terragrunt/errors"
+	"github.com/gruntwork-io/go-commons/errors"
 	"github.com/gruntwork-io/terragrunt/remote"
 )
 
@@ -20,20 +20,28 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 	output := map[string]cty.Value{}
 
 	// Convert attributes that are primitive types
-	output["terraform_binary"] = gostringToCty(config.TerraformBinary)
-	output["terraform_version_constraint"] = gostringToCty(config.TerraformVersionConstraint)
-	output["terragrunt_version_constraint"] = gostringToCty(config.TerragruntVersionConstraint)
-	output["download_dir"] = gostringToCty(config.DownloadDir)
-	output["iam_role"] = gostringToCty(config.IamRole)
-	output["skip"] = goboolToCty(config.Skip)
-	output["iam_assume_role_session_name"] = gostringToCty(config.IamAssumeRoleSessionName)
+	output[MetadataTerraformBinary] = gostringToCty(config.TerraformBinary)
+	output[MetadataTerraformVersionConstraint] = gostringToCty(config.TerraformVersionConstraint)
+	output[MetadataTerragruntVersionConstraint] = gostringToCty(config.TerragruntVersionConstraint)
+	output[MetadataDownloadDir] = gostringToCty(config.DownloadDir)
+	output[MetadataIamRole] = gostringToCty(config.IamRole)
+	output[MetadataSkip] = goboolToCty(config.Skip)
+	output[MetadataIamAssumeRoleSessionName] = gostringToCty(config.IamAssumeRoleSessionName)
+
+	catalogConfigCty, err := catalogConfigAsCty(config.Catalog)
+	if err != nil {
+		return cty.NilVal, err
+	}
+	if catalogConfigCty != cty.NilVal {
+		output[MetadataCatalog] = catalogConfigCty
+	}
 
 	terraformConfigCty, err := terraformConfigAsCty(config.Terraform)
 	if err != nil {
 		return cty.NilVal, err
 	}
 	if terraformConfigCty != cty.NilVal {
-		output["terraform"] = terraformConfigCty
+		output[MetadataTerraform] = terraformConfigCty
 	}
 
 	remoteStateCty, err := remoteStateAsCty(config.RemoteState)
@@ -41,7 +49,7 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		return cty.NilVal, err
 	}
 	if remoteStateCty != cty.NilVal {
-		output["remote_state"] = remoteStateCty
+		output[MetadataRemoteState] = remoteStateCty
 	}
 
 	dependenciesCty, err := goTypeToCty(config.Dependencies)
@@ -49,11 +57,11 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		return cty.NilVal, err
 	}
 	if dependenciesCty != cty.NilVal {
-		output["dependencies"] = dependenciesCty
+		output[MetadataDependencies] = dependenciesCty
 	}
 
 	if config.PreventDestroy != nil {
-		output["prevent_destroy"] = goboolToCty(*config.PreventDestroy)
+		output[MetadataPreventDestroy] = goboolToCty(*config.PreventDestroy)
 	}
 
 	dependencyCty, err := dependencyBlocksAsCty(config.TerragruntDependencies)
@@ -61,7 +69,7 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		return cty.NilVal, err
 	}
 	if dependencyCty != cty.NilVal {
-		output["dependency"] = dependencyCty
+		output[MetadataDependency] = dependencyCty
 	}
 
 	generateCty, err := goTypeToCty(config.GenerateConfigs)
@@ -69,7 +77,7 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		return cty.NilVal, err
 	}
 	if generateCty != cty.NilVal {
-		output["generate"] = generateCty
+		output[MetadataGenerateConfigs] = generateCty
 	}
 
 	retryableCty, err := goTypeToCty(config.RetryableErrors)
@@ -77,7 +85,7 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		return cty.NilVal, err
 	}
 	if retryableCty != cty.NilVal {
-		output["retryable_errors"] = retryableCty
+		output[MetadataRetryableErrors] = retryableCty
 	}
 
 	iamAssumeRoleDurationCty, err := goTypeToCty(config.IamAssumeRoleDuration)
@@ -86,7 +94,7 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 	}
 
 	if iamAssumeRoleDurationCty != cty.NilVal {
-		output["iam_assume_role_duration"] = iamAssumeRoleDurationCty
+		output[MetadataIamAssumeRoleDuration] = iamAssumeRoleDurationCty
 	}
 
 	retryMaxAttemptsCty, err := goTypeToCty(config.RetryMaxAttempts)
@@ -94,7 +102,7 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		return cty.NilVal, err
 	}
 	if retryMaxAttemptsCty != cty.NilVal {
-		output["retry_max_attempts"] = retryMaxAttemptsCty
+		output[MetadataRetryMaxAttempts] = retryMaxAttemptsCty
 	}
 
 	retrySleepIntervalSecCty, err := goTypeToCty(config.RetrySleepIntervalSec)
@@ -102,7 +110,7 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		return cty.NilVal, err
 	}
 	if retrySleepIntervalSecCty != cty.NilVal {
-		output["retry_sleep_interval_sec"] = retrySleepIntervalSecCty
+		output[MetadataRetrySleepIntervalSec] = retrySleepIntervalSecCty
 	}
 
 	inputsCty, err := convertToCtyWithJson(config.Inputs)
@@ -110,7 +118,7 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		return cty.NilVal, err
 	}
 	if inputsCty != cty.NilVal {
-		output["inputs"] = inputsCty
+		output[MetadataInputs] = inputsCty
 	}
 
 	localsCty, err := convertToCtyWithJson(config.Locals)
@@ -118,19 +126,283 @@ func TerragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		return cty.NilVal, err
 	}
 	if localsCty != cty.NilVal {
-		output["locals"] = localsCty
+		output[MetadataLocals] = localsCty
+	}
+
+	if len(config.DependentModulesPath) > 0 {
+		dependentModulesCty, err := convertToCtyWithJson(config.DependentModulesPath)
+		if err != nil {
+			return cty.NilVal, err
+		}
+		if dependentModulesCty != cty.NilVal {
+			output[MetadataDependentModules] = dependentModulesCty
+		}
 	}
 
 	return convertValuesMapToCtyVal(output)
 }
 
+func TerragruntConfigAsCtyWithMetadata(config *TerragruntConfig) (cty.Value, error) {
+	output := map[string]cty.Value{}
+
+	// Convert attributes that are primitive types
+	if err := wrapWithMetadata(config, config.TerraformBinary, MetadataTerraformBinary, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapWithMetadata(config, config.TerraformVersionConstraint, MetadataTerraformVersionConstraint, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapWithMetadata(config, config.TerragruntVersionConstraint, MetadataTerragruntVersionConstraint, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapWithMetadata(config, config.DownloadDir, MetadataDownloadDir, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapWithMetadata(config, config.IamRole, MetadataIamRole, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapWithMetadata(config, config.Skip, MetadataSkip, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapWithMetadata(config, config.IamAssumeRoleSessionName, MetadataIamAssumeRoleSessionName, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if config.PreventDestroy != nil {
+		if err := wrapWithMetadata(config, *config.PreventDestroy, MetadataPreventDestroy, &output); err != nil {
+			return cty.NilVal, err
+		}
+	}
+
+	if err := wrapWithMetadata(config, config.RetryableErrors, MetadataRetryableErrors, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapWithMetadata(config, config.IamAssumeRoleDuration, MetadataIamAssumeRoleDuration, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapWithMetadata(config, config.RetryMaxAttempts, MetadataRetryMaxAttempts, &output); err != nil {
+		return cty.NilVal, err
+	}
+	if err := wrapWithMetadata(config, config.RetrySleepIntervalSec, MetadataRetrySleepIntervalSec, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapWithMetadata(config, config.DependentModulesPath, MetadataDependentModules, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	// Terraform
+	terraformConfigCty, err := terraformConfigAsCty(config.Terraform)
+	if err != nil {
+		return cty.NilVal, err
+	}
+	if terraformConfigCty != cty.NilVal {
+		if err := wrapWithMetadata(config, terraformConfigCty, MetadataTerraform, &output); err != nil {
+			return cty.NilVal, err
+		}
+	}
+
+	// Remote state
+	remoteStateCty, err := remoteStateAsCty(config.RemoteState)
+	if err != nil {
+		return cty.NilVal, err
+	}
+	if remoteStateCty != cty.NilVal {
+		if err := wrapWithMetadata(config, remoteStateCty, MetadataRemoteState, &output); err != nil {
+			return cty.NilVal, err
+		}
+	}
+
+	if err := wrapCtyMapWithMetadata(config, &config.Inputs, MetadataInputs, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	if err := wrapCtyMapWithMetadata(config, &config.Locals, MetadataLocals, &output); err != nil {
+		return cty.NilVal, err
+	}
+
+	// remder dependencies as list of maps with "value" and "metadata"
+	if config.Dependencies != nil {
+		var dependencyWithMetadata = make([]ValueWithMetadata, 0, len(config.Dependencies.Paths))
+		for _, dependency := range config.Dependencies.Paths {
+			var content = ValueWithMetadata{}
+			content.Value = gostringToCty(dependency)
+			metadata, found := config.GetMapFieldMetadata(MetadataDependencies, dependency)
+			if found {
+				content.Metadata = metadata
+			}
+			dependencyWithMetadata = append(dependencyWithMetadata, content)
+		}
+		dependenciesCty, err := goTypeToCty(dependencyWithMetadata)
+		if err != nil {
+			return cty.NilVal, err
+		}
+		output[MetadataDependencies] = dependenciesCty
+	}
+
+	if config.TerragruntDependencies != nil {
+		var dependenciesMap = map[string]cty.Value{}
+		for _, block := range config.TerragruntDependencies {
+			ctyValue, err := goTypeToCty(block)
+			if err != nil {
+				continue
+			}
+			if ctyValue == cty.NilVal {
+				continue
+			}
+
+			var content = ValueWithMetadata{}
+			content.Value = ctyValue
+			metadata, found := config.GetMapFieldMetadata(MetadataDependency, block.Name)
+			if found {
+				content.Metadata = metadata
+			}
+
+			value, err := goTypeToCty(content)
+			if err != nil {
+				continue
+			}
+			dependenciesMap[block.Name] = value
+		}
+		if len(dependenciesMap) > 0 {
+			dependenciesCty, err := convertValuesMapToCtyVal(dependenciesMap)
+			if err != nil {
+				return cty.NilVal, err
+			}
+			output[MetadataDependency] = dependenciesCty
+		}
+	}
+
+	if config.GenerateConfigs != nil {
+		var generateConfigsWithMetadata = map[string]cty.Value{}
+		for key, value := range config.GenerateConfigs {
+			ctyValue, err := goTypeToCty(value)
+			if err != nil {
+				continue
+			}
+			if ctyValue == cty.NilVal {
+				continue
+			}
+			var content = ValueWithMetadata{}
+			content.Value = ctyValue
+			metadata, found := config.GetMapFieldMetadata(MetadataGenerateConfigs, key)
+			if found {
+				content.Metadata = metadata
+			}
+
+			v, err := goTypeToCty(content)
+			if err != nil {
+				continue
+			}
+			generateConfigsWithMetadata[key] = v
+		}
+		if len(generateConfigsWithMetadata) > 0 {
+			dependenciesCty, err := convertValuesMapToCtyVal(generateConfigsWithMetadata)
+			if err != nil {
+				return cty.NilVal, err
+			}
+			output[MetadataGenerateConfigs] = dependenciesCty
+		}
+	}
+
+	return convertValuesMapToCtyVal(output)
+}
+
+func wrapCtyMapWithMetadata(config *TerragruntConfig, data *map[string]interface{}, fieldType string, output *map[string]cty.Value) error {
+	var valueWithMetadata = map[string]cty.Value{}
+	for key, value := range *data {
+		var content = ValueWithMetadata{}
+		ctyValue, err := convertToCtyWithJson(value)
+		if err != nil {
+			return err
+		}
+		content.Value = ctyValue
+		metadata, found := config.GetMapFieldMetadata(fieldType, key)
+		if found {
+			content.Metadata = metadata
+		}
+		v, err := goTypeToCty(content)
+		if err != nil {
+			continue
+		}
+		valueWithMetadata[key] = v
+	}
+	if len(valueWithMetadata) > 0 {
+		localsCty, err := convertValuesMapToCtyVal(valueWithMetadata)
+		if err != nil {
+			return err
+		}
+		(*output)[fieldType] = localsCty
+	}
+	return nil
+}
+
+func wrapWithMetadata(config *TerragruntConfig, value interface{}, metadataName string, output *map[string]cty.Value) error {
+	if value == nil {
+		return nil
+	}
+	var valueWithMetadata = ValueWithMetadata{}
+	ctyValue, err := goTypeToCty(value)
+	if err != nil {
+		return err
+	}
+	valueWithMetadata.Value = ctyValue
+	metadata, found := config.GetFieldMetadata(metadataName)
+	if found {
+		valueWithMetadata.Metadata = metadata
+	}
+	ctyJson, err := goTypeToCty(valueWithMetadata)
+	if err != nil {
+		return err
+	}
+	if ctyJson != cty.NilVal {
+		(*output)[metadataName] = ctyJson
+	}
+	return nil
+}
+
+// ValueWithMetadata stores value and metadata used in render-json with metadata.
+type ValueWithMetadata struct {
+	Value    cty.Value         `json:"value" cty:"value"`
+	Metadata map[string]string `json:"metadata" cty:"metadata"`
+}
+
+// ctyCatalogConfig is an alternate representation of CatalogConfig that converts internal blocks into a map that
+// maps the name to the underlying struct, as opposed to a list representation.
+type ctyCatalogConfig struct {
+	URLs []string `cty:"urls"`
+}
+
+// Serialize CatalogConfig to a cty Value, but with maps instead of lists for the blocks.
+func catalogConfigAsCty(config *CatalogConfig) (cty.Value, error) {
+	if config == nil {
+		return cty.NilVal, nil
+	}
+
+	configCty := ctyCatalogConfig{
+		URLs: config.URLs,
+	}
+
+	return goTypeToCty(configCty)
+}
+
 // ctyTerraformConfig is an alternate representation of TerraformConfig that converts internal blocks into a map that
 // maps the name to the underlying struct, as opposed to a list representation.
 type ctyTerraformConfig struct {
-	ExtraArgs   map[string]TerraformExtraArguments `cty:"extra_arguments"`
-	Source      *string                            `cty:"source"`
-	BeforeHooks map[string]Hook                    `cty:"before_hook"`
-	AfterHooks  map[string]Hook                    `cty:"after_hook"`
+	ExtraArgs     map[string]TerraformExtraArguments `cty:"extra_arguments"`
+	Source        *string                            `cty:"source"`
+	IncludeInCopy *[]string                          `cty:"include_in_copy"`
+	BeforeHooks   map[string]Hook                    `cty:"before_hook"`
+	AfterHooks    map[string]Hook                    `cty:"after_hook"`
+	ErrorHooks    map[string]ErrorHook               `cty:"error_hook"`
 }
 
 // Serialize TerraformConfig to a cty Value, but with maps instead of lists for the blocks.
@@ -140,10 +412,12 @@ func terraformConfigAsCty(config *TerraformConfig) (cty.Value, error) {
 	}
 
 	configCty := ctyTerraformConfig{
-		Source:      config.Source,
-		ExtraArgs:   map[string]TerraformExtraArguments{},
-		BeforeHooks: map[string]Hook{},
-		AfterHooks:  map[string]Hook{},
+		Source:        config.Source,
+		IncludeInCopy: config.IncludeInCopy,
+		ExtraArgs:     map[string]TerraformExtraArguments{},
+		BeforeHooks:   map[string]Hook{},
+		AfterHooks:    map[string]Hook{},
+		ErrorHooks:    map[string]ErrorHook{},
 	}
 
 	for _, arg := range config.ExtraArgs {
@@ -154,6 +428,9 @@ func terraformConfigAsCty(config *TerraformConfig) (cty.Value, error) {
 	}
 	for _, hook := range config.AfterHooks {
 		configCty.AfterHooks[hook.Name] = hook
+	}
+	for _, errorHook := range config.ErrorHooks {
+		configCty.ErrorHooks[errorHook.Name] = errorHook
 	}
 
 	return goTypeToCty(configCty)
